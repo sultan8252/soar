@@ -2116,8 +2116,24 @@ func (q *Query4Audit) RuleORUsage() Rule {
 	switch q.Stmt.(type) {
 	case *sqlparser.Select:
 		err := sqlparser.Walk(func(node sqlparser.SQLNode) (kontinue bool, err error) {
-			switch node.(type) {
+			switch n := node.(type) {
 			case *sqlparser.OrExpr:
+				switch n.Left.(type) {
+				case *sqlparser.IsExpr:
+					// IS TRUE|FALSE|NULL eg. a = 1 or a IS NULL 这种情况也需要考虑
+					return true, nil
+				}
+				switch n.Right.(type) {
+				case *sqlparser.IsExpr:
+					// IS TRUE|FALSE|NULL eg. a = 1 or a IS NULL 这种情况也需要考虑
+					return true, nil
+				}
+
+				if strings.Fields(sqlparser.String(n.Left))[0] != strings.Fields(sqlparser.String(n.Right))[0] {
+					// 不同字段需要区分开，不同字段的 OR 不能改写为 IN
+					return true, nil
+				}
+
 				rule = HeuristicRules["ARG.008"]
 				return false, nil
 			}
@@ -2133,14 +2149,16 @@ func (q *Query4Audit) RuleSpaceWithQuote() Rule {
 	var rule = q.RuleOK()
 	for _, tk := range ast.Tokenize(q.Query) {
 		if tk.Type == ast.TokenTypeQuote {
-			// 序列化的Val是带引号，所以要取第2个最倒数第二个，这样也就不用担心len<2了。
-			switch tk.Val[1] {
-			case ' ':
-				rule = HeuristicRules["ARG.009"]
-			}
-			switch tk.Val[len(tk.Val)-2] {
-			case ' ':
-				rule = HeuristicRules["ARG.009"]
+			if len(tk.Val) >= 2 {
+				// 序列化的Val是带引号，所以要取第2个和倒数第二个，这样也就不用担心len<2了。
+				switch tk.Val[1] {
+				case ' ':
+					rule = HeuristicRules["ARG.009"]
+				}
+				switch tk.Val[len(tk.Val)-2] {
+				case ' ':
+					rule = HeuristicRules["ARG.009"]
+				}
 			}
 		}
 	}
@@ -2287,6 +2305,24 @@ func (q *Query4Audit) RuleDataDrop() Rule {
 		}
 	case *sqlparser.Delete:
 		rule = HeuristicRules["SEC.003"]
+	}
+	return rule
+}
+
+// RuleInjection SEC.004
+func (q *Query4Audit) RuleInjection() Rule {
+	var rule = q.RuleOK()
+	if q.TiStmt != nil {
+		json := ast.StmtNode2JSON(q.Query, "", "")
+		fs := common.JSONFind(json, "FnName")
+		for _, f := range fs {
+			functionName := gjson.Get(f, "L")
+			switch functionName.String() {
+			case "sleep", "benchmark", "get_lock", "release_lock":
+				// Ref: https://www.k0rz3n.com/2019/02/01/一篇文章带你深入理解%20SQL%20盲注/
+				rule = HeuristicRules["SEC.004"]
+			}
+		}
 	}
 	return rule
 }
@@ -3727,9 +3763,14 @@ func RuleMySQLError(item string, err error) Rule {
 		}
 	}
 
-	// Received #1146 error from MySQL server: "table xxx doesn't exist"
-	errReg := regexp.MustCompile(`(?i)Received #([0-9]+) error from MySQL server: ['"](.*)['"]`)
 	errStr := err.Error()
+	// Error 1071: Specified key was too long; max key length is 3072 bytes
+	errReg := regexp.MustCompile(`(?i)Error ([0-9]+): (.*)`)
+	if strings.HasPrefix(errStr, "Received") {
+		// Received #1146 error from MySQL server: "table xxx doesn't exist"
+		errReg = regexp.MustCompile(`(?i)Received #([0-9]+) error from MySQL server: ['"](.*)['"]`)
+	}
+
 	msg := errReg.FindStringSubmatch(errStr)
 	var mysqlError MySQLError
 
@@ -3762,7 +3803,7 @@ func RuleMySQLError(item string, err error) Rule {
 	default:
 		return Rule{
 			Item:     item,
-			Summary:  "MySQL execute failed: " + mysqlError.ErrString,
+			Summary:  "MySQL execute failed",
 			Severity: "L8",
 			Content:  mysqlError.ErrString,
 		}

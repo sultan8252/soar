@@ -446,6 +446,7 @@ var mySQLKeywords = map[string]string{
 	"geometry":           "GEOMETRY",
 	"geometrycollection": "GEOMETRYCOLLECTION",
 	"global":             "GLOBAL",
+	"grant":              "GRANT",
 	"group":              "GROUP",
 	"group_concat":       "GROUP_CONCAT",
 	"having":             "HAVING",
@@ -512,6 +513,7 @@ var mySQLKeywords = map[string]string{
 	"reorganize":         "REORGANIZE",
 	"repair":             "REPAIR",
 	"replace":            "REPLACE",
+	"revoke":             "REVOKE",
 	"right":              "RIGHT",
 	"rlike":              "REGEXP",
 	"rollback":           "ROLLBACK",
@@ -926,13 +928,18 @@ func SplitStatement(buf []byte, delimiter []byte) (string, string, []byte) {
 		}
 
 		// quoted string
-		if b == '`' || b == '\'' || b == '"' {
+		switch b {
+		case '`', '\'', '"':
 			if i > 1 && buf[i-1] != '\\' {
 				if quoted && b == quoteRune {
 					quoted = false
+					quoteRune = 0
 				} else {
-					quoted = true
-					quoteRune = b
+					// check if first time found quote
+					if quoteRune == 0 {
+						quoted = true
+						quoteRune = b
+					}
 				}
 			}
 		}
@@ -985,4 +992,18 @@ func NewLines(buf []byte) int {
 		}
 	}
 	return newLines
+}
+
+// QueryType get query type such as SELECT/INSERT/DELETE/CREATE/ALTER
+func QueryType(sql string) string {
+	tokens := Tokenize(sql)
+	for _, token := range tokens {
+		// use strings.Fields for 'ALTER TABLE' token split
+		for _, tk := range strings.Fields(strings.TrimSpace(token.Val)) {
+			if val, ok := mySQLKeywords[strings.ToLower(tk)]; ok {
+				return val
+			}
+		}
+	}
+	return "UNKNOWN"
 }

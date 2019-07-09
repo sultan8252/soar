@@ -161,9 +161,9 @@ vendor: vitess pingcap-parser
 .PHONY: lint
 lint: build
 	@echo "$(CGREEN)Run linter check ...$(CEND)"
-	CGO_ENABLED=0 retool do gometalinter.v2 -j 1 --config doc/example/metalinter.json ./...
-	retool do revive -formatter friendly --exclude vendor/... -config doc/example/revive.toml ./...
-	retool do golangci-lint --tests=false run
+	CGO_ENABLED=0 GOMODULE111=off retool do gometalinter.v2 -j 1 --config doc/example/metalinter.json ./...
+	GOMODULE111=off retool do revive -formatter friendly --exclude vendor/... -config doc/example/revive.toml ./...
+	GOMODULE111=off retool do golangci-lint --tests=false run
 	@echo "gometalinter check your code is pretty good"
 
 .PHONY: release
@@ -191,7 +191,8 @@ docker:
 	-e MYSQL_DATABASE=sakila \
 	-p 3306:3306 \
 	-v `pwd`/test/sql/init.sql.gz:/docker-entrypoint-initdb.d/init.sql.gz \
-	$(MYSQL_RELEASE):$(MYSQL_VERSION)
+	$(MYSQL_RELEASE):$(MYSQL_VERSION) \
+	--sql-mode ""
 
 	@echo "waiting for sakila database initializing "
 	@timeout=180; while [ $${timeout} -gt 0 ] ; do \

@@ -1005,6 +1005,14 @@ func init() {
 			Case:     "delete from table where col = 'condition'",
 			Func:     (*Query4Audit).RuleDataDrop,
 		},
+		"SEC.004": {
+			Item:     "SEC.004",
+			Severity: "L0",
+			Summary:  "发现常见 SQL 注入函数",
+			Content:  `SLEEP(), BENCHMARK(), GET_LOCK(), RELEASE_LOCK() 等函数通常出现在 SQL 注入语句中，会严重影响数据库性能。`,
+			Case:     "SELECT BENCHMARK(10, RAND())",
+			Func:     (*Query4Audit).RuleInjection,
+		},
 		"STA.001": {
 			Item:     "STA.001",
 			Severity: "L0",
@@ -1194,7 +1202,7 @@ func InBlackList(sql string) bool {
 }
 
 // FormatSuggest 格式化输出优化建议
-func FormatSuggest(sql string, format string, suggests ...map[string]Rule) (map[string]Rule, string) {
+func FormatSuggest(sql string, currentDB string, format string, suggests ...map[string]Rule) (map[string]Rule, string) {
 	common.Log.Debug("FormatSuggest, Query: %s", sql)
 	var fingerprint, id string
 	var buf []string
@@ -1244,17 +1252,7 @@ func FormatSuggest(sql string, format string, suggests ...map[string]Rule) (map[
 	common.Log.Debug("FormatSuggest, format: %s", format)
 	switch format {
 	case "json":
-		js, err := json.MarshalIndent(Result{
-			ID:          id,
-			Fingerprint: fingerprint,
-			Sample:      sql,
-			Suggest:     suggest,
-		}, "", "  ")
-		if err == nil {
-			buf = append(buf, fmt.Sprintln(string(js)))
-		} else {
-			common.Log.Error("FormatSuggest json.Marshal Error: %v", err)
-		}
+		buf = append(buf, formatJSON(sql, currentDB, suggest))
 
 	case "text":
 		for item, rule := range suggest {
@@ -1442,6 +1440,94 @@ func FormatSuggest(sql string, format string, suggests ...map[string]Rule) (map[
 	}
 
 	return suggest, str
+}
+
+// JSONSuggest json format suggestion
+type JSONSuggest struct {
+	ID             string   `json:"ID"`
+	Fingerprint    string   `json:"Fingerprint"`
+	Score          int      `json:"Score"`
+	Sample         string   `json:"Sample"`
+	Explain        []Rule   `json:"Explain"`
+	HeuristicRules []Rule   `json:"HeuristicRules"`
+	IndexRules     []Rule   `json:"IndexRules"`
+	Tables         []string `json:"Tables"`
+}
+
+func formatJSON(sql string, db string, suggest map[string]Rule) string {
+	var id, fingerprint, result string
+
+	fingerprint = query.Fingerprint(sql)
+	id = query.Id(fingerprint)
+
+	// Score
+	score := 100
+	for item := range suggest {
+		l, err := strconv.Atoi(strings.TrimLeft(suggest[item].Severity, "L"))
+		if err != nil {
+			common.Log.Error("formatJSON strconv.Atoi error: %s, item: %s, serverity: %s", err.Error(), item, suggest[item].Severity)
+		}
+		score = score - l*5
+	}
+	if score < 0 {
+		score = 0
+	}
+
+	sug := JSONSuggest{
+		ID:          id,
+		Fingerprint: fingerprint,
+		Sample:      sql,
+		Tables:      ast.SchemaMetaInfo(sql, db),
+		Score:       score,
+	}
+
+	// Explain info
+	var sortItem []string
+	for item := range suggest {
+		if strings.HasPrefix(item, "EXP") {
+			sortItem = append(sortItem, item)
+		}
+	}
+	sort.Strings(sortItem)
+	for _, i := range sortItem {
+		sug.Explain = append(sug.Explain, suggest[i])
+	}
+	sortItem = make([]string, 0)
+
+	// Index advisor
+	for item := range suggest {
+		if strings.HasPrefix(item, "IDX") {
+			sortItem = append(sortItem, item)
+		}
+	}
+	sort.Strings(sortItem)
+	for _, i := range sortItem {
+		sug.IndexRules = append(sug.IndexRules, suggest[i])
+	}
+	sortItem = make([]string, 0)
+
+	// Heuristic rules
+	for item := range suggest {
+		if !strings.HasPrefix(item, "EXP") && !strings.HasPrefix(item, "IDX") {
+			if strings.HasPrefix(item, "ERR") && suggest[item].Content == "" {
+				continue
+			}
+			sortItem = append(sortItem, item)
+		}
+	}
+	sort.Strings(sortItem)
+	for _, i := range sortItem {
+		sug.HeuristicRules = append(sug.HeuristicRules, suggest[i])
+	}
+	sortItem = make([]string, 0)
+
+	js, err := json.MarshalIndent(sug, "", "  ")
+	if err == nil {
+		result = fmt.Sprint(string(js))
+	} else {
+		common.Log.Error("formatJSON json.Marshal Error: %v", err)
+	}
+	return result
 }
 
 // ListHeuristicRules 打印支持的启发式规则，对应命令行参数-list-heuristic-rules

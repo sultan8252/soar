@@ -1840,15 +1840,32 @@ func TestRuleMultiDBJoin(t *testing.T) {
 // ARG.008
 func TestRuleORUsage(t *testing.T) {
 	common.Log.Debug("Entering function: %s", common.GetFunctionName())
-	sqls := []string{
-		`SELECT c1,c2,c3 FROM tab WHERE c1 = 14 OR c2 = 17;`,
+	sqls := [][]string{
+		{
+			`SELECT c1,c2,c3 FROM tab WHERE c1 = 14 OR c1 = 14;`,
+		},
+		{
+			`SELECT c1,c2,c3 FROM tab WHERE c1 = 14 OR c2 = 17;`,
+			`SELECT c1,c2,c3 FROM tab WHERE c1 = 14 OR c1 IS NULL;`,
+		},
 	}
-	for _, sql := range sqls {
+	for _, sql := range sqls[0] {
 		q, err := NewQuery4Audit(sql)
 		if err == nil {
 			rule := q.RuleORUsage()
 			if rule.Item != "ARG.008" {
 				t.Error("Rule not match:", rule.Item, "Expect : ARG.008")
+			}
+		} else {
+			t.Error("sqlparser.Parse Error:", err)
+		}
+	}
+	for _, sql := range sqls[1] {
+		q, err := NewQuery4Audit(sql)
+		if err == nil {
+			rule := q.RuleORUsage()
+			if rule.Item != "OK" {
+				t.Error("Rule not match:", rule.Item, "Expect : OK")
 			}
 		} else {
 			t.Error("sqlparser.Parse Error:", err)
@@ -2166,6 +2183,45 @@ func TestRuleDataDrop(t *testing.T) {
 			rule := q.RuleDataDrop()
 			if rule.Item != "SEC.003" {
 				t.Error("Rule not match:", rule.Item, "Expect : SEC.003")
+			}
+		} else {
+			t.Error("sqlparser.Parse Error:", err)
+		}
+	}
+	common.Log.Debug("Exiting function: %s", common.GetFunctionName())
+}
+
+// SEC.004
+func TestRuleInjection(t *testing.T) {
+	common.Log.Debug("Entering function: %s", common.GetFunctionName())
+	sqls := [][]string{
+		{
+			`select benchmark(10, rand())`,
+			`select sleep(1)`,
+			`select get_lock('lock_name', 1)`,
+			`select release_lock('lock_name')`,
+		},
+		{
+			"select * from `sleep`",
+		},
+	}
+	for _, sql := range sqls[0] {
+		q, err := NewQuery4Audit(sql)
+		if err == nil {
+			rule := q.RuleInjection()
+			if rule.Item != "SEC.004" {
+				t.Error("Rule not match:", rule.Item, "Expect : SEC.004")
+			}
+		} else {
+			t.Error("sqlparser.Parse Error:", err)
+		}
+	}
+	for _, sql := range sqls[1] {
+		q, err := NewQuery4Audit(sql)
+		if err == nil {
+			rule := q.RuleInjection()
+			if rule.Item != "OK" {
+				t.Error("Rule not match:", rule.Item, "Expect : OK")
 			}
 		} else {
 			t.Error("sqlparser.Parse Error:", err)
@@ -3409,6 +3465,7 @@ func TestRuleStandardName(t *testing.T) {
 			"CREATE TABLE `tbl-name` (a int);",
 			"CREATE TABLE `tbl `(a int)",
 			"CREATE TABLE t__bl (a int);",
+			"SELECT `dataType` FROM tb;",
 		},
 		{
 			"CREATE TABLE tbl (a int)",
